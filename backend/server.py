@@ -18,7 +18,7 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
-import os, uuid, json, logging, asyncio, base64
+import os, uuid, json, logging, asyncio, base64, re
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict, Any
 
@@ -66,6 +66,11 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 if not ANTHROPIC_API_KEY:
     _startup_warnings.append(
         "ANTHROPIC_API_KEY was not set — brand assessment (/brands/{id}/assess) will return a clear 500 error."
+    )
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+if not GEMINI_API_KEY:
+    _startup_warnings.append(
+        "GEMINI_API_KEY was not set — ad creative image generation will return a clear 500 error."
     )
 RESEND_FROM = os.environ.get("RESEND_FROM_EMAIL", "Raven Sharp <noreply@raven-sharp.com>")
 if not RESEND_KEY:
@@ -232,10 +237,12 @@ class BrandAsset(BaseModel):
 class BrandProfileIn(BaseModel):
     name: str
     brand_bible: str = ""        # tone, audience, do's-and-don'ts — same field as Book/Video Creator
+    website_url: Optional[str] = None
     primary_color: Optional[str] = None
     secondary_color: Optional[str] = None
     logo_url: Optional[str] = None
     characters: List[Dict[str, Any]] = Field(default_factory=list)  # [{name, description, image_url}] — for consistency
+    products: List[Dict[str, Any]] = Field(default_factory=list)    # [{name, description, image_url, price}]
     assets: List[BrandAsset] = Field(default_factory=list)          # broader asset library: product photos, banners, etc.
     notes: str = ""
 
@@ -629,11 +636,93 @@ PUBLISH_PROVIDERS = {
     "tiktok": publish_tiktok,
 }
 
+@api.post("/campaigns/{campaign_id}/approve")
+async def approve_campaign(campaign_id: str, user: dict = Depends(get_user)):
+    """Explicit approval gate — a campaign must be approved before it can be
+    published anywhere, regardless of what its draft creative looks like."""
+    result = await db.campaigns.update_one(
+        {"id": campaign_id, "user_id": user["id"]},
+        {"$set": {"status": "Approved", "approved_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(404, "Campaign not found")
+    return {"ok": True, "status": "Approved"}
+
+
+class GenerateCreativeIn(BaseModel):
+    platform: str
+    ad_type: str          # one of AD_TYPES
+    brief: str = ""        # optional extra direction beyond the brand bible
+
+@api.post("/campaigns/{campaign_id}/generate-creative")
+async def generate_creative(campaign_id: str, payload: GenerateCreativeIn, user: dict = Depends(get_user)):
+    """Generates draft ad copy (+ an image for image-based ad types) for a
+    campaign, saved onto the campaign as a draft — NOT published anywhere.
+    Publishing is a separate, explicit step gated behind /approve."""
+    campaign = await db.campaigns.find_one({"id": campaign_id, "user_id": user["id"]})
+    if not campaign:
+        raise HTTPException(404, "Campaign not found")
+    if payload.ad_type not in AD_TYPES:
+        raise HTTPException(400, f"Unknown ad_type. Choose one of: {AD_TYPES}")
+    brand = await db.brand_profiles.find_one({"id": campaign["brand_profile_id"], "user_id": user["id"]})
+    if not brand:
+        raise HTTPException(400, "Campaign's brand_profile_id no longer matches one of your brands")
+    if not ANTHROPIC_API_KEY:
+        raise HTTPException(500, "ANTHROPIC_API_KEY not configured")
+
+    brand_context = f"Brand: {brand.get('name','')}\nBrand bible: {brand.get('brand_bible','')}\nProducts: {brand.get('products', [])}"
+    copy_prompt = (
+        f"{brand_context}\n\nWrite {payload.ad_type} copy for the '{platform_label(payload.platform)}' platform. "
+        f"{payload.brief}\n\nKeep it on-brand and platform-appropriate in length/tone."
+    )
+    async with httpx.AsyncClient(timeout=30) as c:
+        r = await c.post("https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
+            json={"model": "claude-sonnet-5", "max_tokens": 400,
+                  "system": "You write on-brand ad copy. Return ONLY the ad copy text, nothing else.",
+                  "messages": [{"role": "user", "content": copy_prompt}]})
+        if not r.is_success:
+            raise HTTPException(502, f"Copy generation failed: {r.text[:300]}")
+        copy_text = "".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text")
+
+    image_b64 = None
+    needs_image = payload.ad_type in ("image_post", "carousel", "story")
+    if needs_image:
+        if not GEMINI_API_KEY:
+            logger.warning("generate_creative: image ad_type requested but GEMINI_API_KEY not set — copy only")
+        else:
+            image_prompt = f"{brand_context}\n\nCreate an ad image for: {copy_text}"
+            async with httpx.AsyncClient(timeout=90) as c:
+                gr = await c.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent?key={GEMINI_API_KEY}",
+                    json={"contents": [{"parts": [{"text": image_prompt}]}]})
+                if gr.is_success:
+                    for part in gr.json().get("candidates", [{}])[0].get("content", {}).get("parts", []):
+                        if part.get("inlineData", {}).get("data"):
+                            image_b64 = part["inlineData"]["data"]
+                else:
+                    logger.warning(f"Ad image generation failed: {gr.text[:300]}")
+
+    draft = {
+        "id": str(uuid.uuid4()), "platform": payload.platform, "ad_type": payload.ad_type,
+        "copy": copy_text, "has_image": bool(image_b64),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.campaigns.update_one({"id": campaign_id}, {"$push": {"draft_creatives": draft}})
+    return {**draft, "image_b64": image_b64}
+
+
+def platform_label(platform: str) -> str:
+    return PLATFORM_LABELS.get(platform, platform)
+
+
 @api.post("/campaigns/{campaign_id}/publish/{platform}")
 async def publish_campaign(campaign_id: str, platform: str, content: PublishContent, user: dict = Depends(get_user)):
     campaign = await db.campaigns.find_one({"id": campaign_id, "user_id": user["id"]})
     if not campaign:
         raise HTTPException(404, "Campaign not found")
+    if campaign.get("status") != "Approved":
+        raise HTTPException(403, "Campaign must be approved (POST /campaigns/{id}/approve) before it can be published")
     if platform not in PUBLISH_PROVIDERS:
         raise HTTPException(400, f"Unknown platform. Choose one of: {list(PUBLISH_PROVIDERS.keys())}")
     conn = await db.connections.find_one({"user_id": user["id"], "platform": platform})
@@ -645,42 +734,89 @@ async def publish_campaign(campaign_id: str, platform: str, content: PublishCont
 
 
 # ── Brand assessment — recommends WHERE to advertise, free channels first ──
+async def fetch_website_text(url: str, max_chars: int = 3000) -> str:
+    """Fetches a brand's own website and strips it to plain text for context.
+    This is a direct fetch of a known URL, not general web search — fine for
+    'read this specific brand's own site', not a substitute for market
+    research across the wider web."""
+    if not url:
+        return ""
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as c:
+            r = await c.get(url, headers={"User-Agent": "Mozilla/5.0 (compatible; RavenSharpAdManager/1.0)"})
+            if not r.is_success:
+                return ""
+            html = r.text
+            text = re.sub(r"<script[\s\S]*?</script>|<style[\s\S]*?</style>", " ", html, flags=re.IGNORECASE)
+            text = re.sub(r"<[^>]+>", " ", text)
+            text = re.sub(r"\s+", " ", text).strip()
+            return text[:max_chars]
+    except Exception as e:
+        logger.warning(f"Website fetch failed for {url}: {e}")
+        return ""
+
+
 class AssessBrandIn(BaseModel):
     brand_profile_id: str
 
+AD_TYPES = ["image_post", "carousel", "video", "reel", "poll", "blog_post", "story"]
+
 @api.post("/brands/{brand_id}/assess")
 async def assess_brand(brand_id: str, user: dict = Depends(get_user)):
-    """Uses Claude to recommend target audience + channels for this brand —
-    explicitly instructed to exhaust free/organic options (owned social
-    profiles, Facebook Groups, Google Business Profile, community
-    engagement) before recommending any paid ad spend."""
+    """Builds a full advertising plan for this brand: fetches the brand's own
+    website for context, then asks Claude for a structured JSON plan —
+    recommended channels (free/organic first, paid only if needed) AND which
+    ad types suit each channel (image_post, carousel, video, reel, poll,
+    blog_post, story)."""
     brand = await db.brand_profiles.find_one({"id": brand_id, "user_id": user["id"]})
     if not brand:
         raise HTTPException(404, "Brand not found")
     if not ANTHROPIC_API_KEY:
         raise HTTPException(500, "ANTHROPIC_API_KEY not configured")
 
+    website_text = await fetch_website_text(brand.get("website_url", ""))
+
     system_message = (
-        "You are a marketing strategist. Given a brand's profile, recommend where and how "
-        "to promote it. CRITICAL RULE: always recommend free/organic channels first — owned "
-        "social profiles, relevant Facebook/community Groups, Google Business Profile, "
-        "content marketing, SEO — and only recommend paid advertising (Meta Ads, Google Ads, "
-        "TikTok Ads, etc.) as a secondary option once free channels are exhausted or clearly "
-        "insufficient for the brand's goals. Structure your answer as:\n"
-        "FREE_CHANNELS: <comma-separated list>\nPAID_CHANNELS: <comma-separated list, or 'none needed yet'>\n"
-        "TARGET_AUDIENCE: <one paragraph>\nREASONING: <one paragraph>"
+        "You are a marketing strategist. Given a brand's profile (and optionally its website "
+        "content and product list), produce an advertising plan. CRITICAL RULE: always recommend "
+        "free/organic channels first — owned social profiles, relevant Facebook/community Groups, "
+        "Google Business Profile, content marketing, SEO/blog posts — and only recommend paid "
+        "advertising (Meta Ads, Google Ads, TikTok Ads, etc.) as a secondary option once free "
+        "channels are exhausted or clearly insufficient for the brand's goals.\n\n"
+        "For each recommended channel, also recommend which ad type(s) suit it, choosing only "
+        f"from this list: {', '.join(AD_TYPES)}.\n\n"
+        "Respond with ONLY valid JSON, no other text, in exactly this shape:\n"
+        '{"free_channels": [{"channel": "...", "ad_types": ["..."], "why": "..."}], '
+        '"paid_channels": [{"channel": "...", "ad_types": ["..."], "why": "..."}], '
+        '"target_audience": "...", "reasoning": "..."}'
     )
-    prompt = f"Brand: {brand.get('name','')}\nBrand bible: {brand.get('brand_bible','')}\nCharacters/products: {brand.get('characters', [])}"
+    prompt = (
+        f"Brand: {brand.get('name','')}\n"
+        f"Brand bible: {brand.get('brand_bible','')}\n"
+        f"Characters: {brand.get('characters', [])}\n"
+        f"Products: {brand.get('products', [])}\n"
+        f"Website content (fetched live): {website_text or '(no website_url set on this brand, or fetch failed)'}"
+    )
     async with httpx.AsyncClient(timeout=30) as c:
         r = await c.post("https://api.anthropic.com/v1/messages",
             headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
-            json={"model": "claude-sonnet-5", "max_tokens": 500,
+            json={"model": "claude-sonnet-5", "max_tokens": 1000,
                   "system": system_message, "messages": [{"role": "user", "content": prompt}]})
         if not r.is_success:
             raise HTTPException(502, f"Brand assessment failed: {r.text[:300]}")
         data = r.json()
         text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
-    return {"assessment": text}
+
+    try:
+        plan = json.loads(text)
+    except Exception:
+        # Claude occasionally wraps JSON in prose despite instructions —
+        # fall back to returning the raw text rather than a hard failure.
+        logger.warning(f"assess_brand: response wasn't valid JSON, returning raw text. Got: {text[:200]}")
+        plan = {"raw_text": text}
+
+    await db.brand_profiles.update_one({"id": brand_id}, {"$set": {"latest_ad_plan": plan}})
+    return {"plan": plan}
 
 
 # ── Billing — real checkout + REAL webhook (the flagged missing piece) ─────
