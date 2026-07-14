@@ -1,15 +1,15 @@
 # Raven Sharp Ad Manager
 
-A two-service starter project for Railway:
+A two-service starter project for Railway.
 
-- `backend/` is the Express API and Stripe Checkout service.
-- `frontend/` is the Raven Sharp dashboard.
+- `backend/` contains the Express API and Stripe Checkout endpoint.
+- `frontend/` contains the Raven Sharp Ad Manager dashboard and web server.
 
-## Railway deployment
+## Deploy on Railway
 
-Create **two Railway services from this one GitHub repository**.
+Create two Railway services from this one GitHub repository.
 
-### Backend service
+### 1. Backend service
 
 Set the Railway root directory to:
 
@@ -25,9 +25,9 @@ STRIPE_SECRET_KEY=sk_test_...
 FRONTEND_URL=https://your-frontend-service.up.railway.app
 ```
 
-Railway supplies `PORT` automatically. The health check is `/health`.
+Railway supplies `PORT` automatically. The health endpoint is `/health`.
 
-### Frontend service
+### 2. Frontend service
 
 Set the Railway root directory to:
 
@@ -35,7 +35,7 @@ Set the Railway root directory to:
 /frontend
 ```
 
-Add these variables after the backend has a public Railway domain:
+After the backend receives a public Railway domain, add:
 
 ```text
 API_BASE_URL=https://your-backend-service.up.railway.app
@@ -43,12 +43,16 @@ STRIPE_STARTER_PRICE_ID=price_...
 STRIPE_PRO_PRICE_ID=price_...
 ```
 
-The frontend health check is `/health`.
+The frontend health endpoint is `/health`.
 
-## Stripe
+## Stripe setup
 
-Use Stripe test mode first. Create recurring Starter and Pro prices, then place their `price_...` IDs in the frontend service variables. Put the Stripe secret key only in the backend service variables.
+Use Stripe test mode first. Create recurring Starter and Pro prices. Put the safe `price_...` identifiers in the frontend variables, and place the secret key only in the backend variables.
 
-## Current limitations
+## Current prototype limitations
 
-This is an early working foundation. Brand, campaign and ad records are stored in backend memory and reset when the backend restarts. Authentication, Supabase persistence and Stripe webhooks still need to be added before production use.
+- Brand and campaign data is stored in the browser and also sent to temporary backend memory when connected.
+- Backend memory resets when the service restarts.
+- Authentication is not implemented yet.
+- Supabase persistence and Stripe webhooks still need to be added before production use.
+- A successful checkout does not yet grant access automatically.
