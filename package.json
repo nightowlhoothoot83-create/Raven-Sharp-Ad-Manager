@@ -1,8 +1,8 @@
 {
-  "name": "raven-sharp-ad-manager-backend",
+  "name": "raven-sharp-ad-manager",
   "version": "1.0.0",
   "private": true,
-  "description": "Backend API for Raven Sharp Ad Manager",
+  "description": "Single-service Raven Sharp Ad Manager for Railway",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
