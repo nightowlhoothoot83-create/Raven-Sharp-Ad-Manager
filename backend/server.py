@@ -18,7 +18,7 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
-import os, uuid, json, logging, asyncio, base64, re
+import os, uuid, json, logging, asyncio, base64, re, hmac, hashlib
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict, Any
 
@@ -61,6 +61,12 @@ if not JWT_SECRET:
     )
 
 STRIPE_KEY  = os.environ.get("STRIPE_API_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+if STRIPE_KEY and not STRIPE_WEBHOOK_SECRET:
+    _startup_warnings.append(
+        "STRIPE_WEBHOOK_SECRET was not set — /billing/webhook will REJECT all events (fail-closed) "
+        "until this is set. Get it from Stripe Dashboard -> Developers -> Webhooks -> your endpoint."
+    )
 RESEND_KEY  = os.environ.get("RESEND_API_KEY", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 if not ANTHROPIC_API_KEY:
@@ -843,21 +849,66 @@ async def create_checkout(payload: CheckoutIn, user: dict = Depends(get_user)):
             raise HTTPException(500, "Unable to create checkout session.")
         return {"url": res.json()["url"], "plan": payload.plan}
 
+def verify_stripe_signature(payload: bytes, sig_header: str, secret: str, tolerance_sec: int = 300) -> bool:
+    """See Book Creator's identical implementation for full explanation.
+    https://docs.stripe.com/webhooks#verify-manually"""
+    if not sig_header or not secret:
+        return False
+    try:
+        parts = dict(item.split("=", 1) for item in sig_header.split(",") if "=" in item)
+        timestamp = parts.get("t")
+        v1 = parts.get("v1")
+        if not timestamp or not v1:
+            return False
+        if abs(datetime.now(timezone.utc).timestamp() - int(timestamp)) > tolerance_sec:
+            log.warning("Stripe webhook rejected: timestamp outside tolerance (possible replay)")
+            return False
+        signed_payload = f"{timestamp}.".encode() + payload
+        expected = hmac.new(secret.encode(), signed_payload, hashlib.sha256).hexdigest()
+        return hmac.compare_digest(expected, v1)
+    except Exception as e:
+        log.warning(f"Stripe signature verification error: {e}")
+        return False
+
+
 @api.post("/billing/webhook")
 async def stripe_webhook(request: Request):
-    """THE fix for the flagged gap — subscriptions are now actually confirmed
-    server-side instead of trusting the client-side redirect to /success."""
+    """Subscriptions are confirmed server-side here, not via the client-side
+    /success redirect — and as of this fix, only after verifying the request
+    actually came from Stripe (previously anyone could POST a forged event
+    and grant themselves any tier for free)."""
+    raw_body = await request.body()
+
+    if not STRIPE_WEBHOOK_SECRET:
+        log.error("Webhook rejected: STRIPE_WEBHOOK_SECRET is not configured")
+        raise HTTPException(503, "Webhook not configured — set STRIPE_WEBHOOK_SECRET")
+
+    sig_header = request.headers.get("stripe-signature", "")
+    if not verify_stripe_signature(raw_body, sig_header, STRIPE_WEBHOOK_SECRET):
+        log.error("Webhook rejected: invalid or missing Stripe-Signature header")
+        raise HTTPException(400, "Invalid signature")
+
     try:
-        event = json.loads(await request.body())
+        event = json.loads(raw_body)
         if event["type"] == "checkout.session.completed":
             s = event["data"]["object"]
             await db.users.update_one(
                 {"id": s["metadata"]["user_id"]},
                 {"$set": {"tier": s["metadata"]["tier"], "campaigns_this_month": 0,
-                          "subscription_id": s.get("subscription")}})
+                          "subscription_id": s.get("subscription"),
+                          "payment_failed_at": None, "payment_failure_count": 0}})
         elif event["type"] in ["customer.subscription.deleted", "customer.subscription.paused"]:
             sub_id = event["data"]["object"]["id"]
             await db.users.update_one({"subscription_id": sub_id}, {"$set": {"tier": "free"}})
+        elif event["type"] == "invoice.payment_failed":
+            invoice = event["data"]["object"]
+            sub_id = invoice.get("subscription")
+            if sub_id:
+                await db.users.update_one(
+                    {"subscription_id": sub_id},
+                    {"$set": {"payment_failed_at": datetime.now(timezone.utc).isoformat()},
+                     "$inc": {"payment_failure_count": 1}})
+                log.warning(f"Payment failed for subscription {sub_id}")
     except Exception as e:
         log.error(f"Webhook error: {e}")
     return {"ok": True}
