@@ -74,6 +74,8 @@ if not ANTHROPIC_API_KEY:
         "ANTHROPIC_API_KEY was not set — brand assessment (/brands/{id}/assess) will return a clear 500 error."
     )
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+RUNWARE_API_KEY = os.environ.get("RUNWARE_API_KEY", "")
+RUNWARE_MODEL = os.environ.get("RUNWARE_MODEL", "runware:101@1")  # verify/pick exact model in your Runware dashboard's model browser
 if not GEMINI_API_KEY:
     _startup_warnings.append(
         "GEMINI_API_KEY was not set — ad creative image generation will return a clear 500 error."
@@ -710,21 +712,67 @@ async def approve_campaign(campaign_id: str, user: dict = Depends(get_user)):
     return {"ok": True, "status": "Approved"}
 
 
+async def call_runware_image(prompt: str, reference_image_url: Optional[str] = None,
+                              width: int = 1024, height: int = 1024) -> Optional[str]:
+    """Real character-consistency support via Runware's referenceImages
+    parameter — genuinely built for this, unlike stuffing a reference image
+    into a Gemini text prompt. Returns an image URL (not base64) — caller
+    fetches the bytes if base64 is needed."""
+    if not RUNWARE_API_KEY:
+        return None
+    task = {
+        "taskType": "imageInference", "taskUUID": str(uuid.uuid4()),
+        "model": RUNWARE_MODEL, "positivePrompt": prompt,
+        "width": width, "height": height, "numberResults": 1, "outputType": "URL",
+    }
+    if reference_image_url:
+        task["referenceImages"] = [reference_image_url]
+    try:
+        async with httpx.AsyncClient(timeout=90) as c:
+            res = await c.post("https://api.runware.ai/v1",
+                headers={"Authorization": f"Bearer {RUNWARE_API_KEY}", "Content-Type": "application/json"},
+                json=[task])
+            if res.status_code != 200:
+                logger.error(f"Runware error {res.status_code}: {res.text[:300]}")
+                return None
+            data = res.json()
+            results = data.get("data", data) if isinstance(data, dict) else data
+            return results[0].get("imageURL") if isinstance(results, list) and results else None
+    except Exception as e:
+        logger.error(f"Runware call failed: {e}")
+        return None
+
+
 async def _generate_ad_image(brand_context: str, brand: dict, image_prompt: str) -> Optional[str]:
-    """Shared by both initial generation and edit/regenerate — passes the
-    brand's first character reference image (if any) to Gemini for actual
-    visual consistency, not just a text description. This was a confirmed
-    gap: brand characters' reference images sat unused on every ad image
-    generation, same bug pattern as Content Creator's Higgsfield calls."""
+    """Shared by both initial generation and edit/regenerate. Prefers
+    Runware's purpose-built referenceImages parameter for real character
+    consistency when a character reference exists and Runware is
+    configured; falls back to Gemini with the reference image stuffed into
+    the prompt (a workaround, not real conditioning) otherwise."""
+    characters = brand.get("characters", [])
+    character_image_url = characters[0]["image_url"] if characters and characters[0].get("image_url") else None
+
+    if character_image_url and RUNWARE_API_KEY:
+        image_url = await call_runware_image(f"{brand_context}\n\n{image_prompt}", character_image_url)
+        if image_url:
+            try:
+                async with httpx.AsyncClient(timeout=30) as c:
+                    img_res = await c.get(image_url)
+                    if img_res.is_success:
+                        return base64.b64encode(img_res.content).decode()
+            except Exception as e:
+                logger.warning(f"Runware result fetch failed, falling back to Gemini: {e}")
+        else:
+            logger.warning("Runware generation failed, falling back to Gemini")
+
     if not GEMINI_API_KEY:
         return None
     parts = [{"text": f"{brand_context}\n\n{image_prompt}"}]
-    characters = brand.get("characters", [])
     ref_image_b64 = None
-    if characters and characters[0].get("image_url"):
+    if character_image_url:
         try:
             async with httpx.AsyncClient(timeout=20) as c:
-                img_res = await c.get(characters[0]["image_url"])
+                img_res = await c.get(character_image_url)
                 if img_res.is_success:
                     ref_image_b64 = base64.b64encode(img_res.content).decode()
         except Exception as e:
