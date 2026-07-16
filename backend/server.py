@@ -710,6 +710,42 @@ async def approve_campaign(campaign_id: str, user: dict = Depends(get_user)):
     return {"ok": True, "status": "Approved"}
 
 
+async def _generate_ad_image(brand_context: str, brand: dict, image_prompt: str) -> Optional[str]:
+    """Shared by both initial generation and edit/regenerate — passes the
+    brand's first character reference image (if any) to Gemini for actual
+    visual consistency, not just a text description. This was a confirmed
+    gap: brand characters' reference images sat unused on every ad image
+    generation, same bug pattern as Content Creator's Higgsfield calls."""
+    if not GEMINI_API_KEY:
+        return None
+    parts = [{"text": f"{brand_context}\n\n{image_prompt}"}]
+    characters = brand.get("characters", [])
+    ref_image_b64 = None
+    if characters and characters[0].get("image_url"):
+        try:
+            async with httpx.AsyncClient(timeout=20) as c:
+                img_res = await c.get(characters[0]["image_url"])
+                if img_res.is_success:
+                    ref_image_b64 = base64.b64encode(img_res.content).decode()
+        except Exception as e:
+            logger.warning(f"Failed to fetch character reference image: {e}")
+    if ref_image_b64:
+        parts.append({"inlineData": {"mimeType": "image/png", "data": ref_image_b64}})
+        parts[0]["text"] += "\n\nUse the attached reference image to keep this character/brand visually consistent."
+
+    async with httpx.AsyncClient(timeout=90) as c:
+        gr = await c.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent?key={GEMINI_API_KEY}",
+            json={"contents": [{"parts": parts}]})
+        if not gr.is_success:
+            logger.warning(f"Ad image generation failed: {gr.text[:300]}")
+            return None
+        for part in gr.json().get("candidates", [{}])[0].get("content", {}).get("parts", []):
+            if part.get("inlineData", {}).get("data"):
+                return part["inlineData"]["data"]
+    return None
+
+
 class GenerateCreativeIn(BaseModel):
     platform: str
     ad_type: str          # one of AD_TYPES
@@ -747,30 +783,51 @@ async def generate_creative(campaign_id: str, payload: GenerateCreativeIn, user:
         copy_text = "".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text")
 
     image_b64 = None
+    image_prompt_used = None
     needs_image = payload.ad_type in ("image_post", "carousel", "story")
     if needs_image:
         if not GEMINI_API_KEY:
             logger.warning("generate_creative: image ad_type requested but GEMINI_API_KEY not set — copy only")
         else:
-            image_prompt = f"{brand_context}\n\nCreate an ad image for: {copy_text}"
-            async with httpx.AsyncClient(timeout=90) as c:
-                gr = await c.post(
-                    f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent?key={GEMINI_API_KEY}",
-                    json={"contents": [{"parts": [{"text": image_prompt}]}]})
-                if gr.is_success:
-                    for part in gr.json().get("candidates", [{}])[0].get("content", {}).get("parts", []):
-                        if part.get("inlineData", {}).get("data"):
-                            image_b64 = part["inlineData"]["data"]
-                else:
-                    logger.warning(f"Ad image generation failed: {gr.text[:300]}")
+            image_prompt_used = f"Create an ad image for: {copy_text}"
+            image_b64 = await _generate_ad_image(brand_context, brand, image_prompt_used)
 
     draft = {
         "id": str(uuid.uuid4()), "platform": payload.platform, "ad_type": payload.ad_type,
-        "copy": copy_text, "has_image": bool(image_b64),
+        "copy": copy_text, "has_image": bool(image_b64), "image_prompt": image_prompt_used,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.campaigns.update_one({"id": campaign_id}, {"$push": {"draft_creatives": draft}})
     return {**draft, "image_b64": image_b64}
+
+
+class RegenerateImageIn(BaseModel):
+    prompt: str  # the edited/refined prompt to regenerate with
+
+@api.post("/campaigns/{campaign_id}/creatives/{creative_id}/regenerate-image")
+async def regenerate_creative_image(campaign_id: str, creative_id: str, payload: RegenerateImageIn, user: dict = Depends(get_user)):
+    """Edit-prompt-box regeneration for an already-generated ad image —
+    matches the same pattern as POD's image edit/regenerate."""
+    campaign = await db.campaigns.find_one({"id": campaign_id, "user_id": user["id"]})
+    if not campaign:
+        raise HTTPException(404, "Campaign not found")
+    creative = next((c for c in campaign.get("draft_creatives", []) if c["id"] == creative_id), None)
+    if not creative:
+        raise HTTPException(404, "Creative not found")
+    brand = await db.brand_profiles.find_one({"id": campaign["brand_profile_id"], "user_id": user["id"]})
+    if not brand:
+        raise HTTPException(400, "Campaign's brand_profile_id no longer matches one of your brands")
+
+    brand_context = f"Brand: {brand.get('name','')}\nBrand bible: {brand.get('brand_bible','')}\nProducts: {brand.get('products', [])}"
+    image_b64 = await _generate_ad_image(brand_context, brand, payload.prompt)
+    if not image_b64:
+        raise HTTPException(500, "Image regeneration failed — check GEMINI_API_KEY is configured")
+
+    await db.campaigns.update_one(
+        {"id": campaign_id, "draft_creatives.id": creative_id},
+        {"$set": {"draft_creatives.$.image_prompt": payload.prompt, "draft_creatives.$.has_image": True}},
+    )
+    return {"id": creative_id, "image_b64": image_b64, "prompt_used": payload.prompt}
 
 
 def platform_label(platform: str) -> str:
