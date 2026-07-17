@@ -114,11 +114,10 @@
       try{await postToApi('/campaigns',campaign)}catch(error){showToast('Saved locally. Backend sync failed.')}
     }
     async function checkout(plan,event){
-      const priceId=plan==='starter'?config.stripeStarterPriceId:config.stripeProPriceId;
-      if(!config.apiBaseUrl||!priceId){showToast('Add the backend URL and Stripe price IDs in Railway first.');return}
+      if(!config.apiBaseUrl){showToast('Add the backend URL in Railway first.');return}
       const button=event.currentTarget;const original=button.textContent;button.disabled=true;button.textContent='Opening Stripe…';
       try{
-        const data=await postToApi('/create-checkout-session',{priceId,plan});
+        const data=await postToApi('/create-checkout-session',{plan});
         if(!data?.url)throw new Error('Stripe returned no checkout URL.');
         window.location.assign(data.url);
       }catch(error){showToast(error.message||'Could not open Stripe Checkout.');button.disabled=false;button.textContent=original}

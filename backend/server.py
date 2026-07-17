@@ -130,12 +130,6 @@ TIERS = {
     "owner":   {"brands": 999, "campaigns_per_month": 999999, "price": 0},
 }
 
-# TODO: replace with real Stripe Price IDs (separate product from other apps)
-STRIPE_PRICES = {
-    "starter": os.environ.get("STRIPE_STARTER_PRICE_ID", "price_REPLACE_STARTER"),
-    "pro":     os.environ.get("STRIPE_PRO_PRICE_ID", "price_REPLACE_PRO"),
-}
-
 # ── Auth helpers (identical pattern to Book Creator / Video Creator) ───────
 def hash_pw(pw): return bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode()
 
@@ -990,14 +984,17 @@ async def assess_brand(brand_id: str, user: dict = Depends(get_user)):
 async def create_checkout(payload: CheckoutIn, user: dict = Depends(get_user)):
     if not STRIPE_KEY:
         raise HTTPException(503, "Stripe is not configured.")
-    price_id = STRIPE_PRICES.get(payload.plan)
-    if not price_id:
+    tier_cfg = TIERS.get(payload.plan)
+    if not tier_cfg or tier_cfg["price"] <= 0:
         raise HTTPException(400, "Invalid plan")
     async with httpx.AsyncClient(timeout=30) as c:
         res = await c.post("https://api.stripe.com/v1/checkout/sessions",
             headers={"Authorization": f"Bearer {STRIPE_KEY}"},
             data={"mode": "subscription",
-                  "line_items[0][price]": price_id,
+                  "line_items[0][price_data][currency]": "aud",
+                  "line_items[0][price_data][product_data][name]": f"Raven Sharp Ad Manager — {payload.plan.title()}",
+                  "line_items[0][price_data][unit_amount]": str(tier_cfg["price"] * 100),
+                  "line_items[0][price_data][recurring][interval]": "month",
                   "line_items[0][quantity]": "1",
                   "success_url": f"{APP_URL}/success.html?session_id={{CHECKOUT_SESSION_ID}}",
                   "cancel_url": f"{APP_URL}/billing.html",
@@ -1122,11 +1119,9 @@ async def create_checkout_root(payload: CheckoutIn, user: dict = Depends(get_use
 
 @app.get("/config.js")
 async def config_js():
-    body = f"""window.RAVEN_SHARP_CONFIG = {{
-  "apiBaseUrl": "/",
-  "stripeStarterPriceId": "{os.environ.get('STRIPE_STARTER_PRICE_ID', '')}",
-  "stripeProPriceId": "{os.environ.get('STRIPE_PRO_PRICE_ID', '')}"
-}};"""
+    body = """window.RAVEN_SHARP_CONFIG = {
+  "apiBaseUrl": "/"
+};"""
     return Response(content=body, media_type="application/javascript")
 
 @app.on_event("startup")
