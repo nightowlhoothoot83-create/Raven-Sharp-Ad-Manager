@@ -75,7 +75,7 @@ if not ANTHROPIC_API_KEY:
     )
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 RUNWARE_API_KEY = os.environ.get("RUNWARE_API_KEY", "")
-RUNWARE_MODEL = os.environ.get("RUNWARE_MODEL", "runware:101@1")  # verify/pick exact model in your Runware dashboard's model browser
+RUNWARE_MODEL = os.environ.get("RUNWARE_MODEL", "runware:z-image@turbo")  # verified real model
 if not GEMINI_API_KEY:
     _startup_warnings.append(
         "GEMINI_API_KEY was not set — ad creative image generation will return a clear 500 error."
