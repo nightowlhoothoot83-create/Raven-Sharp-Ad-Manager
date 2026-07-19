@@ -14,8 +14,9 @@
 <body>
   <header class="topbar">
     <div class="wrap nav">
-      <div class="brand"><div class="mark">◆</div><div>Raven Sharp<small>Ad Manager</small></div></div>
+      <div class="brand"><img class="mark" src="/raven-sharp-logo.png" alt="Raven Sharp"><div>Raven Sharp<small>Ad Manager</small></div></div>
       <div class="status"><i class="dot" id="statusDot"></i><span id="statusText">Checking backend</span></div>
+      <button class="btn secondary" id="loginNavBtn" style="margin-left:12px">Sign In</button>
     </div>
   </header>
 
@@ -66,10 +67,104 @@
   </div>
   <div class="toast" id="toast" role="status"></div>
 
+  <div class="modal" id="authModal" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+    <div class="card dialog">
+      <div class="row"><div><h2 id="authTitle">Welcome back</h2><div class="metric-label" id="authSub">Sign in to manage your campaigns.</div></div><button class="ghost" id="closeAuthModal" aria-label="Close">×</button></div>
+      <div id="authError" style="display:none;color:#f87171;font-size:13px;margin-top:12px"></div>
+      <form class="form" id="loginForm">
+        <label>Email<input type="email" id="loginEmail" required placeholder="you@example.com"></label>
+        <label>Password<input type="password" id="loginPassword" required placeholder="••••••••"></label>
+        <div class="dialog-actions"><a class="ghost" id="showRegister" style="text-decoration:none;display:flex;align-items:center">No account? Sign up</a><button class="btn" type="submit">Sign In</button></div>
+      </form>
+      <form class="form" id="registerForm" style="display:none">
+        <label>Name<input id="registerName" placeholder="Your name"></label>
+        <label>Email<input type="email" id="registerEmail" required placeholder="you@example.com"></label>
+        <label>Password<input type="password" id="registerPassword" required minlength="8" placeholder="At least 8 characters"></label>
+        <div class="dialog-actions"><a class="ghost" id="showLogin" style="text-decoration:none;display:flex;align-items:center">Have an account? Sign in</a><button class="btn" type="submit">Create Account</button></div>
+      </form>
+    </div>
+  </div>
+
   <footer><div class="wrap row"><span>Raven Sharp Ad Manager</span><span>Ascension Digital</span></div></footer>
 
   <script>
     const config = window.RAVEN_SHARP_CONFIG || {};
+    const API_BASE = (config.apiBaseUrl || '').replace(/\/$/, '') + '/api';
+    let currentUser = null;
+
+    function openAuthModal(mode){
+      document.getElementById('authModal').classList.add('open');
+      document.getElementById('authError').style.display = 'none';
+      showAuthMode(mode || 'login');
+    }
+    function closeAuthModal(){ document.getElementById('authModal').classList.remove('open'); }
+    function showAuthMode(mode){
+      const isLogin = mode === 'login';
+      document.getElementById('loginForm').style.display = isLogin ? 'grid' : 'none';
+      document.getElementById('registerForm').style.display = isLogin ? 'none' : 'grid';
+      document.getElementById('authTitle').textContent = isLogin ? 'Welcome back' : 'Create your account';
+      document.getElementById('authSub').textContent = isLogin ? 'Sign in to manage your campaigns.' : 'Start free — no card required.';
+    }
+    function showAuthError(message){
+      const el = document.getElementById('authError');
+      el.textContent = message; el.style.display = 'block';
+    }
+    async function doLogin(event){
+      event.preventDefault();
+      try {
+        const res = await fetch(`${API_BASE}/auth/login`, {
+          method: 'POST', credentials: 'include',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({
+            email: document.getElementById('loginEmail').value,
+            password: document.getElementById('loginPassword').value,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || 'Invalid email or password');
+        currentUser = data; onAuthed();
+      } catch (err) { showAuthError(err.message); }
+      return false;
+    }
+    async function doRegister(event){
+      event.preventDefault();
+      try {
+        const res = await fetch(`${API_BASE}/auth/register`, {
+          method: 'POST', credentials: 'include',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({
+            name: document.getElementById('registerName').value,
+            email: document.getElementById('registerEmail').value,
+            password: document.getElementById('registerPassword').value,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || 'Could not create account');
+        currentUser = data; onAuthed();
+      } catch (err) { showAuthError(err.message); }
+      return false;
+    }
+    async function doLogout(){
+      try { await fetch(`${API_BASE}/auth/logout`, {method:'POST', credentials:'include'}); } catch (e) {}
+      currentUser = null;
+      document.getElementById('loginNavBtn').textContent = 'Sign In';
+      document.getElementById('loginNavBtn').onclick = () => openAuthModal('login');
+    }
+    function onAuthed(){
+      closeAuthModal();
+      document.getElementById('loginForm').reset();
+      document.getElementById('registerForm').reset();
+      document.getElementById('loginNavBtn').textContent = currentUser.name || currentUser.email.split('@')[0];
+      document.getElementById('loginNavBtn').onclick = doLogout;
+      showToast(`Welcome, ${currentUser.name || currentUser.email}!`);
+    }
+    async function checkExistingSession(){
+      if (!config.apiBaseUrl) return;
+      try {
+        const res = await fetch(`${API_BASE}/auth/me`, {credentials:'include'});
+        if (res.ok) { currentUser = await res.json(); onAuthed(); }
+      } catch (e) {}
+    }
     const storageKey = 'ravenSharpAdManager';
     const seed = {
       brands: [
@@ -132,6 +227,13 @@
     document.getElementById('addBrandTop').addEventListener('click',openModal);
     document.getElementById('addBrandButton').addEventListener('click',openModal);
     document.getElementById('closeModal').addEventListener('click',closeModal);
+    document.getElementById('loginNavBtn').addEventListener('click', () => openAuthModal('login'));
+    document.getElementById('closeAuthModal').addEventListener('click', closeAuthModal);
+    document.getElementById('authModal').addEventListener('click', (event) => { if (event.target.id === 'authModal') closeAuthModal(); });
+    document.getElementById('showRegister').addEventListener('click', () => showAuthMode('register'));
+    document.getElementById('showLogin').addEventListener('click', () => showAuthMode('login'));
+    document.getElementById('loginForm').addEventListener('submit', doLogin);
+    document.getElementById('registerForm').addEventListener('submit', doRegister);
     document.getElementById('cancelModal').addEventListener('click',closeModal);
     document.getElementById('brandModal').addEventListener('click',(event)=>{if(event.target.id==='brandModal')closeModal()});
     document.getElementById('brandForm').addEventListener('submit',async(event)=>{
@@ -140,7 +242,7 @@
       state.brands.push(brand);saveState();closeModal();showToast(`${brand.name} added.`);
       try{await postToApi('/brands',brand)}catch(error){showToast('Saved locally. Backend sync failed.')}
     });
-    render();checkBackend();
+    render();checkBackend();checkExistingSession();
   </script>
 </body>
 </html>
