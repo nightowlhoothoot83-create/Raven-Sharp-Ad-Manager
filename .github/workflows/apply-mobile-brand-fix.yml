@@ -1,0 +1,32 @@
+name: Apply mobile brand fix
+
+on:
+  push:
+    paths:
+      - '.github/workflows/apply-mobile-brand-fix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore mobile product label
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('public/index.html')
+          s = p.read_text()
+          s = s.replace('.brand small{display:none}', '.brand small{display:block}')
+          p.write_text(s)
+          PY
+      - name: Commit fix
+        run: |
+          git config user.name "Raven Sharp QA"
+          git config user.email "actions@users.noreply.github.com"
+          git add public/index.html
+          git diff --cached --quiet && exit 0
+          git commit -m "fix: restore Ad Manager mobile branding"
+          git push
