@@ -1,0 +1,41 @@
+name: Hotfix Ad Manager backend routing
+on:
+  push:
+    paths: ['.github/workflows/hotfix-ad-backend-routing-20260815.yml']
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Patch worker backend fallback
+        shell: python
+        run: |
+          from pathlib import Path
+          p=Path('public/_worker.js'); s=p.read_text()
+          old="""      const backend = String(env.BACKEND_URL || '').replace(/\\/$/, '');
+      if (!backend) {
+        return new Response(JSON.stringify({
+          detail: 'Ad Manager backend is not configured. Set BACKEND_URL in Cloudflare Pages environment variables.',
+          owner_email: OWNER_EMAIL,
+          owner_name: OWNER_NAME
+        }), { status: 503, headers: { 'content-type': 'application/json; charset=utf-8' } });
+      }
+"""
+          new="""      const backend = String(env.BACKEND_URL || 'https://ads.raven-sharp.com').replace(/\\/$/, '');
+"""
+          if old not in s and "env.BACKEND_URL || 'https://ads.raven-sharp.com'" not in s:
+              raise SystemExit('worker marker missing')
+          if old in s: s=s.replace(old,new,1)
+          p.write_text(s)
+      - name: Verify
+        run: grep -q "env.BACKEND_URL || 'https://ads.raven-sharp.com'" public/_worker.js
+      - name: Commit
+        run: |
+          git config user.name 'Raven Repair Bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add public/_worker.js
+          git diff --cached --quiet || (git commit -m 'Fix Ad Manager backend routing fallback' && git push)
