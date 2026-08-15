@@ -1,0 +1,41 @@
+name: Fix persistent Raven Sharp shell
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-persistent-raven-shell-20260815.yml'
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Patch auth modal shell
+        shell: python
+        run: |
+          from pathlib import Path
+          p=Path('public/index.html'); s=p.read_text()
+          css='''\n/* Persistent approved Raven Sharp shell */\n#authModal{background:rgba(5,5,13,.82)!important;backdrop-filter:blur(14px)}#authModal .dialog{width:min(900px,100%);padding:0;overflow:hidden;border-color:rgba(167,139,250,.28);display:grid;grid-template-columns:1fr 1fr;background:linear-gradient(145deg,rgba(23,23,50,.98),rgba(10,10,24,.99))}\n.auth-brand-panel{padding:34px;background:radial-gradient(circle at 30% 10%,rgba(124,92,191,.28),transparent 42%);border-right:1px solid rgba(255,255,255,.08);display:flex;flex-direction:column;justify-content:center}.auth-brand-panel img{width:76px;height:76px;object-fit:contain;filter:drop-shadow(0 0 24px rgba(124,92,191,.45));margin-bottom:18px}.auth-brand-name{font-family:'Cabinet Grotesk','Outfit',sans-serif;font-size:20px;font-weight:800}.auth-brand-name strong{color:#a78bfa}.auth-brand-name small{display:block;margin-top:5px;font:500 10px/1 'DM Mono',monospace;letter-spacing:.2em;color:#38bdf8;text-transform:uppercase}.auth-brand-panel h3{font-size:34px;line-height:1;margin:24px 0 12px}.auth-brand-panel p{color:var(--muted);margin:0}.auth-form-panel{padding:30px}.auth-form-panel>.row{margin-bottom:10px}\n@media(max-width:720px){#authModal .dialog{grid-template-columns:1fr}.auth-brand-panel{padding:24px;border-right:0;border-bottom:1px solid rgba(255,255,255,.08)}.auth-brand-panel h3{font-size:26px;margin:14px 0 8px}.auth-brand-panel img{width:56px;height:56px;margin-bottom:10px}.auth-form-panel{padding:24px}}\n'''
+          if 'Persistent approved Raven Sharp shell' not in s: s=s.replace('</style>',css+'</style>',1)
+          old='''  <div class="modal" id="authModal" role="dialog" aria-modal="true" aria-labelledby="authTitle">\n    <div class="card dialog">\n      <div class="row"><div><h2 id="authTitle">Welcome back</h2><div class="metric-label" id="authSub">Sign in to manage your campaigns.</div></div><button class="ghost" id="closeAuthModal" aria-label="Close">Ã—</button></div>'''
+          new='''  <div class="modal" id="authModal" role="dialog" aria-modal="true" aria-labelledby="authTitle">\n    <div class="card dialog">\n      <section class="auth-brand-panel"><img src="/raven-centre.png" alt=""><div class="auth-brand-name">RAVEN <strong>SHARP</strong><small>Ad Manager</small></div><h3>Campaign control without losing the Raven.</h3><p>The same approved Raven Sharp workspace carries through sign-in, account and campaign work.</p></section>\n      <section class="auth-form-panel">\n      <div class="row"><div><h2 id="authTitle">Welcome back</h2><div class="metric-label" id="authSub">Sign in to manage your campaigns.</div></div><button class="ghost" id="closeAuthModal" aria-label="Close">×</button></div>'''
+          if old in s:
+              s=s.replace(old,new,1)
+              s=s.replace('''      </form>\n    </div>\n  </div>\n\n\n<section class="raven-public-info"''','''      </form>\n      </section>\n    </div>\n  </div>\n\n\n<section class="raven-public-info"''',1)
+          elif 'auth-brand-panel' not in s:
+              raise SystemExit('auth modal marker missing')
+          s=s.replace('Start free â€” no card required.','Start free — no card required.')
+          p.write_text(s)
+      - name: Verify
+        run: |
+          grep -q 'auth-brand-panel' public/index.html
+          grep -q 'Persistent approved Raven Sharp shell' public/index.html
+      - name: Commit
+        run: |
+          git config user.name 'Raven Repair Bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add public/index.html
+          git diff --cached --quiet || git commit -m 'Keep Raven Sharp branding through Ad Manager sign-in'
+          git push
