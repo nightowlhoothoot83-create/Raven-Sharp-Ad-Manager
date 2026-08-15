@@ -1,0 +1,36 @@
+name: Persist Raven Sharp shell - Ad Manager
+on:
+  push:
+    paths:
+      - '.github/workflows/persist-raven-shell-20260815.yml'
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: main}
+      - name: Patch auth shell
+        shell: python
+        run: |
+          from pathlib import Path
+          p=Path('public/index.html'); s=p.read_text()
+          css='''\n/* Persistent approved Raven Sharp auth shell */\n.rs-auth-brand{text-align:center;margin:-4px 0 18px}.rs-auth-brand img{width:88px;height:88px;object-fit:contain;filter:drop-shadow(0 0 24px rgba(124,92,191,.48));margin-bottom:8px}.rs-auth-brand .name{font-family:'Cabinet Grotesk','Outfit',sans-serif;font-size:20px;font-weight:800;letter-spacing:-.025em}.rs-auth-brand .name strong{color:#a78bfa}.rs-auth-brand small{display:block;margin-top:4px;font:500 9px/1 'DM Mono',monospace;letter-spacing:.2em;text-transform:uppercase;color:#38bdf8}#authModal .dialog{background:linear-gradient(180deg,rgba(23,28,49,.98),rgba(10,13,28,.99));border-color:rgba(167,139,250,.3);box-shadow:0 30px 90px rgba(0,0,0,.55),0 0 50px rgba(124,92,191,.12)}\n'''
+          if 'Persistent approved Raven Sharp auth shell' not in s:
+              s=s.replace('</style>',css+'</style>',1)
+          old='<div class="card dialog">\n      <div class="row"><div><h2 id="authTitle">Welcome back</h2><div class="metric-label" id="authSub">Sign in to manage your campaigns.</div></div><button class="ghost" id="closeAuthModal" aria-label="Close">Ã—</button></div>'
+          new='<div class="card dialog">\n      <div class="rs-auth-brand"><img src="/raven-centre.png" alt=""><div class="name">RAVEN <strong>SHARP</strong></div><small>Ad Manager</small></div>\n      <div class="row"><div><h2 id="authTitle">Welcome back</h2><div class="metric-label" id="authSub">Sign in to manage your campaigns.</div></div><button class="ghost" id="closeAuthModal" aria-label="Close">×</button></div>'
+          if old in s: s=s.replace(old,new,1)
+          elif 'rs-auth-brand' not in s: raise SystemExit('Ad auth marker missing')
+          s=s.replace("Start free â€” no card required.","Start free — no card required.")
+          s=s.replace('placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢"','placeholder="••••••••"')
+          p.write_text(s)
+      - name: Verify
+        run: grep -q 'rs-auth-brand' public/index.html
+      - name: Commit
+        run: |
+          git config user.name 'Raven Repair Bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add public/index.html
+          git diff --cached --quiet || (git commit -m 'Keep Raven Sharp design through Ad Manager sign-in' && git push)
