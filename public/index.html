@@ -21,6 +21,9 @@
 .adg-footer-copy{padding-top:18px;border-top:1px solid rgba(255,255,255,.08);font-size:12px}
 .adg-logo{height:40px;width:auto;object-fit:contain;margin:0 auto 10px}.footer-suite,.footer-legal{display:flex;flex-wrap:wrap;justify-content:center;gap:12px;margin:20px auto;color:var(--muted);font-size:12px}.footer-suite a,.footer-legal a{color:var(--muted);text-decoration:none}.footer-suite a:first-child{color:#a78bfa}.adg-brand-grid img{width:40px;height:40px}.adg-footer-copy{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:10px;font:500 10px/1.5 'DM Mono',monospace;text-transform:uppercase;letter-spacing:.12em}.adg-footer-copy img{width:24px;height:24px;object-fit:contain}
 
+
+/* Persistent approved Raven Sharp auth shell */
+.rs-auth-brand{text-align:center;margin:-4px 0 18px}.rs-auth-brand img{width:88px;height:88px;object-fit:contain;filter:drop-shadow(0 0 24px rgba(124,92,191,.48));margin-bottom:8px}.rs-auth-brand .name{font-family:'Cabinet Grotesk','Outfit',sans-serif;font-size:20px;font-weight:800;letter-spacing:-.025em}.rs-auth-brand .name strong{color:#a78bfa}.rs-auth-brand small{display:block;margin-top:4px;font:500 9px/1 'DM Mono',monospace;letter-spacing:.2em;text-transform:uppercase;color:#38bdf8}#authModal .dialog{background:linear-gradient(180deg,rgba(23,28,49,.98),rgba(10,13,28,.99));border-color:rgba(167,139,250,.3);box-shadow:0 30px 90px rgba(0,0,0,.55),0 0 50px rgba(124,92,191,.12)}
 </style>
   <style>body{font-size:16px}.topbar .nav{height:64px}.topbar .brand{font-family:'Cabinet Grotesk','Outfit',sans-serif;font-size:18px;font-weight:800;letter-spacing:-.025em;line-height:1}.topbar .brand strong{color:#a78bfa}.topbar .brand small{margin-top:3px;font:500 9px/1 'DM Mono',monospace;letter-spacing:.2em;color:#38bdf8}.topbar img.mark{width:36px;height:36px;border-radius:0;box-shadow:none;filter:drop-shadow(0 0 8px rgba(124,92,191,.4))}h1,h2,h3,h4{font-family:'Cabinet Grotesk','Outfit',system-ui,sans-serif;font-weight:800}.topbar #loginNavBtn{border:0;background:transparent;color:var(--muted);padding:9px 16px;border-radius:8px}.topbar .nav-links{display:none}.rs-centre-raven{text-align:center;padding:16px 0 0}.rs-centre-raven img{width:208px;height:208px;object-fit:contain;filter:drop-shadow(0 0 34px rgba(124,92,191,.45))}.hero{grid-template-columns:1fr;text-align:center}.hero-copy{text-align:center}.hero-copy h1{font-size:clamp(42px,6vw,72px);font-weight:800;letter-spacing:-.05em;line-height:1;margin-left:auto;margin-right:auto}.hero-copy .lead{margin-left:auto;margin-right:auto}.hero-copy .actions{justify-content:center}.hero-side{display:none}</style>
   <style>body{background:#080810!important}.topbar img.mark{width:44px;height:44px}main.wrap{padding:0 0 80px}.hero-copy.card{padding:70px 0 76px;background:transparent;border:0;border-radius:0;box-shadow:none}.hero-copy .trust-row{justify-content:center}.product-demo.card{margin-top:0;padding:70px 0;background:transparent;border:0;border-radius:0;box-shadow:none}.product-demo .section-head{justify-content:center;text-align:center;margin:0 0 28px}.product-demo .section-head>div{max-width:760px}.topbar .header-actions{display:flex;align-items:center;gap:10px}.topbar .header-cta{border-radius:8px;padding:9px 16px;text-decoration:none}@media(max-width:520px){.hero-copy.card{padding:58px 0 62px}.product-demo.card{padding:58px 0}.topbar .header-cta{display:none}}</style>
@@ -116,11 +119,12 @@
 
   <div class="modal" id="authModal" role="dialog" aria-modal="true" aria-labelledby="authTitle">
     <div class="card dialog">
-      <div class="row"><div><h2 id="authTitle">Welcome back</h2><div class="metric-label" id="authSub">Sign in to manage your campaigns.</div></div><button class="ghost" id="closeAuthModal" aria-label="Close">Ã—</button></div>
+      <div class="rs-auth-brand"><img src="/raven-centre.png" alt=""><div class="name">RAVEN <strong>SHARP</strong></div><small>Ad Manager</small></div>
+      <div class="row"><div><h2 id="authTitle">Welcome back</h2><div class="metric-label" id="authSub">Sign in to manage your campaigns.</div></div><button class="ghost" id="closeAuthModal" aria-label="Close">×</button></div>
       <div id="authError" style="display:none;color:#f87171;font-size:13px;margin-top:12px"></div>
       <form class="form" id="loginForm">
         <label>Email<input type="email" id="loginEmail" required placeholder="you@example.com"></label>
-        <label>Password<input type="password" id="loginPassword" required placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢"></label>
+        <label>Password<input type="password" id="loginPassword" required placeholder="••••••••"></label>
         <div class="dialog-actions"><a class="ghost" id="showRegister" style="text-decoration:none;display:flex;align-items:center">No account? Sign up</a><button class="btn" type="submit">Sign In</button></div>
       </form>
       <form class="form" id="registerForm" style="display:none">
@@ -168,7 +172,7 @@
       document.getElementById('loginForm').style.display = isLogin ? 'grid' : 'none';
       document.getElementById('registerForm').style.display = isLogin ? 'none' : 'grid';
       document.getElementById('authTitle').textContent = isLogin ? 'Welcome back' : 'Create your account';
-      document.getElementById('authSub').textContent = isLogin ? 'Sign in to manage your campaigns.' : 'Start free â€” no card required.';
+      document.getElementById('authSub').textContent = isLogin ? 'Sign in to manage your campaigns.' : 'Start free — no card required.';
     }
     function showAuthError(message){
       const el = document.getElementById('authError');
