@@ -41,6 +41,14 @@ class SaaSSmokeTests(unittest.TestCase):
         self.assertIn('@api.post("/billing/webhook")', self.backend)
         self.assertIn("verify_stripe_signature", self.backend)
 
+    def test_readme_matches_current_fastapi_persistent_architecture(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("FastAPI service", readme)
+        self.assertIn("MongoDB", readme)
+        self.assertIn("STRIPE_WEBHOOK_SECRET", readme)
+        self.assertNotIn("One Express server", readme)
+        self.assertNotIn("persistence and Stripe webhooks are not implemented", readme)
+
 
 if __name__ == "__main__":
     unittest.main()
