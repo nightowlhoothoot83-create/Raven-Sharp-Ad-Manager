@@ -29,6 +29,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
+from publication import submit_once, ReconciliationRequired
+from campaign_import import plan_import, import_draft, public_https
 
 # ── Config (identical pattern to Book Creator / Video Creator) ─────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -271,6 +273,32 @@ class CampaignUpdateIn(BaseModel):
     status: Optional[str] = None
     notes: Optional[str] = None
     publish_targets: Optional[List[str]] = None
+
+class ManifestImportIn(BaseModel):
+    brand_profile_id: str
+    manifest: Dict[str, Any]
+    media_urls: Dict[str, str] = Field(default_factory=dict)
+    selections: Dict[str, str] = Field(default_factory=dict)
+    board_ids: Dict[str, str] = Field(default_factory=dict)
+
+@api.post('/campaign-imports/plan')
+async def plan_manifest(payload: ManifestImportIn, user: dict = Depends(get_user)):
+    brand = await db.brand_profiles.find_one({'id': payload.brand_profile_id, 'user_id': user['id']})
+    if not brand:
+        raise HTTPException(404, 'Brand profile not found')
+    try:
+        return plan_import(user_id=user['id'], brand_id=payload.brand_profile_id,
+            manifest=payload.manifest, media_urls=payload.media_urls,
+            selections=payload.selections, board_ids=payload.board_ids)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+
+@api.post('/campaign-imports')
+async def import_manifest(payload: ManifestImportIn, user: dict = Depends(get_user)):
+    await plan_manifest(payload, user)
+    return await import_draft(db.campaigns, user_id=user['id'], brand_id=payload.brand_profile_id,
+        manifest=payload.manifest, media_urls=payload.media_urls,
+        selections=payload.selections, board_ids=payload.board_ids)
 
 class CheckoutIn(BaseModel):
     plan: str  # "starter" | "pro"
@@ -685,7 +713,6 @@ async def publish_tiktok(access_token: str, _account_id: str, content: PublishCo
 
 PUBLISH_PROVIDERS = {
     "facebook_page": publish_facebook_page,
-    "facebook_group": publish_facebook_group,
     "instagram": publish_instagram,
     "x": publish_x,
     "linkedin": publish_linkedin,
@@ -876,6 +903,15 @@ def platform_label(platform: str) -> str:
     return PLATFORM_LABELS.get(platform, platform)
 
 
+@api.get("/campaigns/{campaign_id}/publications")
+async def list_publications(campaign_id: str, user: dict = Depends(get_user)):
+    campaign = await db.campaigns.find_one({"id": campaign_id, "user_id": user["id"]})
+    if not campaign:
+        raise HTTPException(404, "Campaign not found")
+    return await db.publications.find({"campaign_id": campaign_id, "user_id": user["id"]},
+        {"_id": 0}).sort("created_at", -1).to_list(500)
+
+
 @api.post("/campaigns/{campaign_id}/publish/{platform}")
 async def publish_campaign(campaign_id: str, platform: str, content: PublishContent, user: dict = Depends(get_user)):
     campaign = await db.campaigns.find_one({"id": campaign_id, "user_id": user["id"]})
@@ -885,11 +921,27 @@ async def publish_campaign(campaign_id: str, platform: str, content: PublishCont
         raise HTTPException(403, "Campaign must be approved (POST /campaigns/{id}/approve) before it can be published")
     if platform not in PUBLISH_PROVIDERS:
         raise HTTPException(400, f"Unknown platform. Choose one of: {list(PUBLISH_PROVIDERS.keys())}")
+    if content.image_url and not public_https(content.image_url):
+        raise HTTPException(400, 'A public HTTPS image URL is required')
+    if content.link and not public_https(content.link):
+        raise HTTPException(400, 'A public HTTPS destination is required')
     conn = await db.connections.find_one({"user_id": user["id"], "platform": platform})
     if not conn:
         raise HTTPException(400, f"No {PLATFORM_LABELS.get(platform, platform)} connection found — connect one first via POST /api/connections")
-    result = await PUBLISH_PROVIDERS[platform](conn["access_token"], conn["account_id"], content)
-    await db.campaigns.update_one({"id": campaign_id}, {"$addToSet": {"published_to": platform}})
+    if platform in {"instagram", "pinterest", "tiktok"} and not content.image_url:
+        raise HTTPException(400, f"{platform} requires image_url")
+    if platform == "pinterest" and not content.board_id:
+        raise HTTPException(400, "Pinterest requires board_id")
+    account_id = content.board_id if platform == "pinterest" else conn["account_id"]
+    try:
+        result = await submit_once(db.publications, user_id=user["id"], campaign_id=campaign_id,
+            platform=platform, account_id=account_id, content=content.dict(),
+            send=lambda: PUBLISH_PROVIDERS[platform](conn["access_token"], account_id, content))
+    except ReconciliationRequired as exc:
+        raise HTTPException(409, str(exc)) from None
+    if result["status"] == "confirmed":
+        await db.campaigns.update_one({"id": campaign_id, "user_id": user["id"]},
+            {"$addToSet": {"published_to": platform}})
     return {"platform": platform, "result": result}
 
 
