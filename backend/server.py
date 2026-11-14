@@ -30,6 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
 from publication import submit_once, ReconciliationRequired
+from campaign_import import plan_import, import_draft, public_https
 
 # ── Config (identical pattern to Book Creator / Video Creator) ─────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -272,6 +273,32 @@ class CampaignUpdateIn(BaseModel):
     status: Optional[str] = None
     notes: Optional[str] = None
     publish_targets: Optional[List[str]] = None
+
+class ManifestImportIn(BaseModel):
+    brand_profile_id: str
+    manifest: Dict[str, Any]
+    media_urls: Dict[str, str] = Field(default_factory=dict)
+    selections: Dict[str, str] = Field(default_factory=dict)
+    board_ids: Dict[str, str] = Field(default_factory=dict)
+
+@api.post('/campaign-imports/plan')
+async def plan_manifest(payload: ManifestImportIn, user: dict = Depends(get_user)):
+    brand = await db.brand_profiles.find_one({'id': payload.brand_profile_id, 'user_id': user['id']})
+    if not brand:
+        raise HTTPException(404, 'Brand profile not found')
+    try:
+        return plan_import(user_id=user['id'], brand_id=payload.brand_profile_id,
+            manifest=payload.manifest, media_urls=payload.media_urls,
+            selections=payload.selections, board_ids=payload.board_ids)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+
+@api.post('/campaign-imports')
+async def import_manifest(payload: ManifestImportIn, user: dict = Depends(get_user)):
+    await plan_manifest(payload, user)
+    return await import_draft(db.campaigns, user_id=user['id'], brand_id=payload.brand_profile_id,
+        manifest=payload.manifest, media_urls=payload.media_urls,
+        selections=payload.selections, board_ids=payload.board_ids)
 
 class CheckoutIn(BaseModel):
     plan: str  # "starter" | "pro"
@@ -894,6 +921,10 @@ async def publish_campaign(campaign_id: str, platform: str, content: PublishCont
         raise HTTPException(403, "Campaign must be approved (POST /campaigns/{id}/approve) before it can be published")
     if platform not in PUBLISH_PROVIDERS:
         raise HTTPException(400, f"Unknown platform. Choose one of: {list(PUBLISH_PROVIDERS.keys())}")
+    if content.image_url and not public_https(content.image_url):
+        raise HTTPException(400, 'A public HTTPS image URL is required')
+    if content.link and not public_https(content.link):
+        raise HTTPException(400, 'A public HTTPS destination is required')
     conn = await db.connections.find_one({"user_id": user["id"], "platform": platform})
     if not conn:
         raise HTTPException(400, f"No {PLATFORM_LABELS.get(platform, platform)} connection found — connect one first via POST /api/connections")
