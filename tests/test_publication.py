@@ -15,7 +15,7 @@ class Records:
         self.rows[row['_id']] = dict(row)
     async def find_one(self, query, projection):
         row = self.rows.get(query['_id'])
-        return dict(row) if row else None
+        return {key: value for key, value in row.items() if projection.get(key) != 0} if row else None
     async def update_one(self, query, change): self.rows[query['_id']].update(change['$set'])
 
 class PublicationTests(unittest.IsolatedAsyncioTestCase):
@@ -29,6 +29,9 @@ class PublicationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(isinstance(x, ReconciliationRequired) for x in results))
         repeated = await submit_once(records, **args)
         self.assertTrue(repeated['duplicate_prevented']); self.assertEqual(len(calls), 1)
+        original = next(x for x in results if isinstance(x, dict))
+        self.assertEqual(repeated['publication_id'], original['publication_id'])
+        self.assertNotIn('_id', repeated)
     async def test_timeout_never_blindly_retries(self):
         records = Records(); calls = []
         async def send(): calls.append(1); raise TimeoutError('secret-token')

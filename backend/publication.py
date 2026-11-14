@@ -39,7 +39,7 @@ async def submit_once(collection, *, user_id, campaign_id, platform, account_id,
             raise
         existing = await collection.find_one({'_id': key, 'user_id': user_id}, {'_id': 0})
         if existing and existing['status'] in ('confirmed', 'submitted'):
-            return {**existing, 'duplicate_prevented': True}
+            return {**existing, 'publication_id': key, 'duplicate_prevented': True}
         raise ReconciliationRequired('Prior attempt may have reached provider; reconcile before retry') from None
     try:
         result = await send()
